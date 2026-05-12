@@ -1,0 +1,26 @@
+# Secrets - NUNCA commitar
+cookies.json
+.env
+*.key
+*.pem
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+venv/
+.venv/
+
+# Debug artifacts
+*.png
+debug_*
+
+# IDE
+.idea/
+.vscode/
+*.swp
