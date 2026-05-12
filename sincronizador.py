@@ -97,7 +97,15 @@ def tp_login_browser(username: str, password: str) -> dict:
     Login no TrainingPeaks via browser headless.
     Retorna {"success": True, "cookie": "...", "user_id": "..."} ou {"success": False, "error": "..."}
     """
+    import time
     print(f"  [BROWSER] Iniciando login para {username}...")
+
+    import importlib
+    try:
+        importlib.invalidate_caches()
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        return {"success": False, "error": "playwright nao instalado"}
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -105,6 +113,7 @@ def tp_login_browser(username: str, password: str) -> dict:
             executable_path=CHROME_PATH,
             args=[
                 "--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu",
+                "--disable-blink-features=AutomationControlled",
                 "--disable-software-rasterizer", "--no-first-run",
                 "--disable-background-networking", "--disable-sync", "--mute-audio",
             ],
@@ -116,16 +125,23 @@ def tp_login_browser(username: str, password: str) -> dict:
         page = context.new_page()
 
         try:
-            # Ir direto para o fluxo OAuth
-            page.goto("https://app.trainingpeaks.com/", wait_until="networkidle", timeout=30000)
+            # Ir para home e aceitar cookie consent
+            page.goto("https://app.trainingpeaks.com/", wait_until="domcontentloaded", timeout=30000)
 
-            # Se não redirecionou para login, forçar logout+relogin
-            if "oauth" not in page.url:
-                page.goto("https://oauth.trainingpeaks.com/Account/LogOff", wait_until="networkidle", timeout=15000)
-                page.goto("https://app.trainingpeaks.com/", wait_until="networkidle", timeout=30000)
+            # Aceitar cookie consent se aparecer
+            try:
+                accept_btn = page.locator('button:has-text("Accept Cookies")')
+                if accept_btn.count() > 0:
+                    accept_btn.first.click()
+                    page.wait_for_timeout(2000)
+            except:
+                pass
 
-            # Se estamos no app (logado), capturar cookie direto
-            if "oauth" not in page.url and "login" not in page.url.lower():
+            # Esperar redirecionamento para login (home.trainingpeaks.com)
+            page.wait_for_timeout(2000)
+            
+            # Se ja esta logado (em app.), capturar direto
+            if "app.trainingpeaks.com" in page.url and "login" not in page.url.lower():
                 cookies = context.cookies()
                 tp_auth = next((c for c in cookies if c["name"] == "Production_tpAuth"), None)
                 if tp_auth:
@@ -135,26 +151,32 @@ def tp_login_browser(username: str, password: str) -> dict:
                     browser.close()
                     return {"success": True, "cookie": cookie_str, "user_id": user_id}
 
-            # Estamos na página de login
-            page.wait_for_selector('input[name="Username"], input[type="email"]', timeout=15000)
+            # Se redirecionou para home.trainingpeaks.com/login, logar la
+            if "home.trainingpeaks.com" in page.url or "login" in page.url.lower():
+                print(f"  [BROWSER] Na pagina de login: {page.url}")
 
-            username_sel = 'input[name="Username"]' if page.query_selector('input[name="Username"]') else 'input[type="email"]'
-            password_sel = 'input[name="Password"]' if page.query_selector('input[name="Password"]') else 'input[type="password"]'
+                page.wait_for_selector('input[name="Username"], input[type="email"]', timeout=15000)
 
-            page.fill(username_sel, username)
-            page.fill(password_sel, password)
+                username_sel = 'input[name="Username"]' if page.query_selector('input[name="Username"]') else 'input[type="email"]'
+                password_sel = 'input[name="Password"]' if page.query_selector('input[name="Password"]') else 'input[type="password"]'
 
-            btn = page.query_selector('button[type="submit"]') or page.query_selector('input[type="submit"]')
-            if btn:
+                page.fill(username_sel, username)
+                page.fill(password_sel, password)
+
+                btn = page.locator('button[type="submit"]').first
                 btn.click()
 
-            try:
-                page.wait_for_url("**/app.trainingpeaks.com/**", timeout=30000)
-            except:
-                pass
+                # Esperar redirecionamento para app.
+                try:
+                    page.wait_for_url("**/app.trainingpeaks.com/**", timeout=30000)
+                except:
+                    page.wait_for_timeout(5000)
 
-            import time
-            time.sleep(2)
+                time.sleep(2)
+
+            # Alternativa: ainda tentar oauth antigo
+            if "oauth" in page.url:
+                page.wait_for_timeout(1000)
 
             cookies = context.cookies()
             tp_auth = next((c for c in cookies if c["name"] == "Production_tpAuth"), None)
@@ -162,7 +184,7 @@ def tp_login_browser(username: str, password: str) -> dict:
             if not tp_auth:
                 cookie_names = [c["name"] for c in cookies]
                 browser.close()
-                return {"success": False, "error": f"Cookie nao encontrado. Cookies: {cookie_names}"}
+                return {"success": False, "error": f"Cookie Production_tpAuth nao encontrado. Cookies: {cookie_names}"}
 
             cookie_str = f"Production_tpAuth={tp_auth['value']}"
             access_token = _tp_cookie_to_token(cookie_str)
